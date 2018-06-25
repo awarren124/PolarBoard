@@ -1,6 +1,8 @@
 #include "I2Cdev.h"
 #include "MPU6050.h"
 #include "Wire.h"
+#include "HX711.h"
+
 MPU6050 gyro1;
 MPU6050 gyro2(0x69);
 
@@ -23,8 +25,18 @@ int16_t avg2 = 0;
 float scaledAngle1 = 0;
 float scaledAngle2 = 0;
 
-int minVal = 265;
-int maxVal = 402;
+int lcDT1 = 4;
+int lcCK1 = 5;
+int lcDT2 = 6;
+int lcCK2 = 7;
+
+HX711 loadCell1(lcDT1, lcCK1);
+HX711 loadCell2(lcDT2, lcCK2);
+
+float scaleFactor = 6010;
+
+float totalWeight = 100;
+float weightDist = 0;
 
 void setup() {
 
@@ -43,6 +55,10 @@ void setup() {
 
     pinMode(LED_BUILTIN, OUTPUT);
 
+    loadCell1.set_scale(scaleFactor);
+    loadCell2.set_scale(scaleFactor);
+    loadCell1.tare();
+    loadCell2.tare();
 }
 
 float floatMap(float input, float inputMin, float inputMax, float outputMin, float outputMax){
@@ -89,6 +105,11 @@ void loop() {
     Serial.print(scaledAngle1);
     Serial.print("\t");
     Serial.println(scaledAngle2);
+
+    float weight1 = loadCell1.get_units();
+    float weight2 = loadCell2.get_units();
+
+    weightDist = (weight1 - weight2) / totalWeight;
 
     if(scaledAngle1 > 1.0){
       digitalWrite(LED_BUILTIN, HIGH);
