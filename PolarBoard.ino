@@ -2,6 +2,8 @@
 #include "MPU6050.h"
 #include "Wire.h"
 #include "HX711.h"
+#include "SoftwareSerial.h"
+#include "ODriveArduino"
 
 MPU6050 gyro1;
 MPU6050 gyro2(0x69);
@@ -37,6 +39,27 @@ float scaleFactor = 6010;
 
 float totalWeight = 100;
 float weightDist = 0;
+
+float weightDistCutoffToHov = .2;
+float weightDistCutoffToSwrv = .4;
+
+enum controlMode {
+  hoverboard,
+  swerve
+};
+
+controlMode mode = hoverboard;
+
+int odrive1RX = 8;
+int odrive1TX = 9;
+int odrive2RX = 10;
+int odrive2TX = 11;
+
+SoftwareSerial odrive1Serial(odrive1TX, odrive1RX);
+SoftwareSerial odrive2Serial(odrive2TX, odrive2RX);
+
+ODriveArduino odrive1(odrive1Serial);
+ODriveArduino odrive2(odrive2Serial);
 
 void setup() {
 
@@ -117,6 +140,18 @@ void loop() {
       digitalWrite(LED_BUILTIN, LOW);
     }
 
+    wheelAngleSetpoint = Math.atan2(scaledAngle1 + scaledAngle2)
+
+    if(mode == swerve && abs(weightDist) < weightDistCutoffToHov){
+      mode = hoverboard;
+    }
+
+    if(mode == hoverboard && abs(weightDist) > weightDistCutoffToSwrv){
+      mode = swerve;
+    }
+
+
+    
 }
 
 
