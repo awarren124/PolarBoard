@@ -91,6 +91,16 @@ controlMode mode;
 int deltaTime = 0;
 unsigned long prevMillis = 0;
 
+double leftPIDSetpoint, leftPIDInput, leftPIDOutput;
+double rightPIDSetpoint, rightPIDInput, rightPIDOutput;
+double swervePIDSetpoint, swervePIDInput, swervePIDOutput;
+
+double p = 2, i = 5, d = 1;
+
+PID leftPID(&leftPIDInput, &leftPIDOutput, &leftPIDSetpoint, p, i, d, DIRECT);
+PID rightPID(&rightPIDInput, &rightPIDOutput, &rightPIDSetpoint, p, i, d, DIRECT);
+PID swervePID(&swervePIDInput, &swervePIDOutput, &swervePIDSetpoint, p, i, d, DIRECT);
+
 void setup() {
 
     Wire.begin();
@@ -109,8 +119,8 @@ void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
 
     //initializing scales
-    loadCell1.set_scale(scaleFactor);
     loadCell2.set_scale(scaleFactor);
+    loadCell1.set_scale(scaleFactor);
     loadCell1.tare();
     loadCell2.tare();
 
@@ -128,6 +138,15 @@ void setup() {
         odriveSerials[i] << "w axis" << 1 << ".controller.config.vel_limit " << turnVelocityLimit << '\n';
         odriveSerials[i] << "w axis" << 1 << ".motor.config.current_lim " << turnCurrentLimit << '\n';
     }
+
+    //pid
+    leftPIDSetpoint = 0;
+    rightPIDSetpoint = 0;
+    swervePIDSetpoint = 0;
+    
+    leftPID.SetMode(AUTOMATIC);
+    rightPID.SetMode(AUTOMATIC);
+    swervePID.SetMode(AUTOMATIC);
 
     mode = hoverboard;
 
@@ -195,11 +214,17 @@ void loop() {
             //since it is in hoverboard mode, make sure that the wheels are pointing foreward
             setAngle(0.0);
 
+            //compute PID values
+            leftPIDInput = scaledAngle1;
+            rightPIDInput = scaledAngle2;
+            leftPID.Compute();
+            rightPID.Compute();
+            
             //change the velocity according to the foot pedal angle
             //deltaTime is used so that the velocity is changed based off time, and not how fast the arduino executes the loops
             //it is similar to how Time.deltaTime is used in the Unity3D game engine
-            newLeftVelocity = leftDriveVelocity + scaledAngle1 * deltaTime;
-            newRightVelocity = rightDriveVelocity + scaledAngle2 * deltaTime;
+            newLeftVelocity = leftDriveVelocity + leftPIDOutput * deltaTime;
+            newRightVelocity = rightDriveVelocity + rightPIDOutput * deltaTime;
 
             setVelocity(newLeftVelocity, newRightVelocity);
 
@@ -225,8 +250,11 @@ void loop() {
             //this is the radius component of the polar coordinate
             float magnitude = sqrt(pow(averageScaledAngle, 2) + pow(weightDist, 2));
 
+            swervePIDInput = magnitude;
+            swervePID.Compute();
+
             //change the velocity according to the magnitude of calculated above
-            float newVelocity = ((leftDriveVelocity + rightDriveVelocity) / 2) + magnitude * deltaTime;
+            float newVelocity = ((leftDriveVelocity + rightDriveVelocity) / 2) + swervePIDOutput * deltaTime;
             setVelocity(newVelocity, newVelocity);
             
             break;
