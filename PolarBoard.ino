@@ -3,7 +3,18 @@
 #include "Wire.h"
 #include "HX711.h"
 #include "SoftwareSerial.h"
-#include "ODriveArduino"
+#include "ODriveArduino.h"
+#include "PID_v1.h"
+
+template<class T> inline Print& operator <<(Print &obj,     T arg) {
+    obj.print(arg);
+    return obj;
+}
+template<>        inline Print& operator <<(Print &obj, float arg) {
+    obj.print(arg, 4);
+    return obj;
+}
+
 
 MPU6050 gyro1;
 MPU6050 gyro2(0x69);
@@ -44,11 +55,10 @@ float weightDistCutoffToHov = .2;
 float weightDistCutoffToSwrv = .4;
 
 enum controlMode {
-  hoverboard,
-  swerve
+    hoverboard,
+    swerve
 };
 
-controlMode mode = hoverboard;
 
 int odrive1RX = 8;
 int odrive1TX = 9;
@@ -61,17 +71,34 @@ SoftwareSerial odrive2Serial(odrive2TX, odrive2RX);
 ODriveArduino odrive1(odrive1Serial);
 ODriveArduino odrive2(odrive2Serial);
 
+SoftwareSerial odriveSerials[2] = {odrive1Serial, odrive2Serial};
+
+float driveVelocityLimit = 22000.0;
+float driveCurrentLimit = 11.0;
+
+float turnVelocityLimit = 22000.0;
+float turnCurrentLimit = 11.0;
+
+float wheelMultiplier = 42.0;
+float leftDriveVelocity = 0.0;
+float rightDriveVelocity = 0.0;
+float velocityConstant = 500.0;
+controlMode mode;
+
+int deltaTime = 0;
+unsigned long prevMillis = 0;
+
 void setup() {
 
     Wire.begin();
 
 
-    for(int i = 0; i < rollingAvgSize; i++){
-      values1[i] = 0;
-      values2[i] = 0;
+    for (int i = 0; i < rollingAvgSize; i++) {
+        values1[i] = 0;
+        values2[i] = 0;
     }
 
-    Serial.begin(38400);
+    Serial.begin(115200);
 
     gyro1.initialize();
     gyro2.initialize();
@@ -82,19 +109,35 @@ void setup() {
     loadCell2.set_scale(scaleFactor);
     loadCell1.tare();
     loadCell2.tare();
+
+    odrive1Serial.begin(115200);
+    odrive2Serial.begin(115200);
+
+    for (int i = 0; i < 2; ++i) {
+
+        //drive
+        odriveSerials[i] << "w axis" << 0 << ".controller.config.vel_limit " << driveVelocityLimit << '\n';
+        odriveSerials[i] << "w axis" << 0 << ".motor.config.current_lim " << driveCurrentLimit << '\n';
+
+        //turn
+        odriveSerials[i] << "w axis" << 1 << ".controller.config.vel_limit " << turnVelocityLimit << '\n';
+        odriveSerials[i] << "w axis" << 1 << ".motor.config.current_lim " << turnCurrentLimit << '\n';
+    }
+
+    mode = hoverboard;
+
 }
 
-float floatMap(float input, float inputMin, float inputMax, float outputMin, float outputMax){
-  float slope = (outputMax - outputMin) / (inputMax - inputMin);
-  float output = slope * (input - inputMin) + outputMin;
-  return output;
+float floatMap(float input, float inputMin, float inputMax, float outputMin, float outputMax) {
+    float slope = (outputMax - outputMin) / (inputMax - inputMin);
+    float output = slope * (input - inputMin) + outputMin;
+    return output;
 }
 
 void loop() {
 
+    deltaTime = millis() - prevMillis;
 
-   
-    
     angle1 = gyro1.getAccelerationX();
     angle2 = gyro2.getAccelerationX();
 
@@ -103,26 +146,26 @@ void loop() {
     total1 = total1 + values1[index1];
     index1++;
 
-    if(index1 >= rollingAvgSize){
-      index1 = 0;
+    if (index1 >= rollingAvgSize) {
+        index1 = 0;
     }
 
-    avg1 = total1/rollingAvgSize;
+    avg1 = total1 / rollingAvgSize;
 
     total2 = total2 - values2[index2];
     values2[index2] = angle2;
     total2 = total2 + values2[index2];
     index2++;
 
-    if(index2 >= rollingAvgSize){
-      index2 = 0;
+    if (index2 >= rollingAvgSize) {
+        index2 = 0;
     }
 
-    avg2 = total2/rollingAvgSize;
+    avg2 = total2 / rollingAvgSize;
 
- 
-    float floatAvg1 = avg1/16384.;
-    float floatAvg2 = avg2/16384.;
+
+    float floatAvg1 = avg1 / 16384.;
+    float floatAvg2 = avg2 / 16384.;
     scaledAngle1 = floatMap(floatAvg1, -0.3, 0.3, -1.0, 1.0);
     scaledAngle2 = floatMap(floatAvg2, -0.3, 0.3, -1.0, 1.0);
     Serial.print(scaledAngle1);
@@ -134,24 +177,62 @@ void loop() {
 
     weightDist = (weight1 - weight2) / totalWeight;
 
-    if(scaledAngle1 > 1.0){
-      digitalWrite(LED_BUILTIN, HIGH);
-    }else{
-      digitalWrite(LED_BUILTIN, LOW);
-    }
+    float wheelAngleSetpoint = (scaledAngle1 + scaledAngle2) / 2;
 
-    wheelAngleSetpoint = Math.atan2(scaledAngle1 + scaledAngle2)
-
-    if(mode == swerve && abs(weightDist) < weightDistCutoffToHov){
-      mode = hoverboard;
-    }
-
-    if(mode == hoverboard && abs(weightDist) > weightDistCutoffToSwrv){
-      mode = swerve;
-    }
-
-
+    float newLeftVelocity, newRightVelocity, newVelocity;
     
+    switch (mode) {
+        case hoverboard:
+
+            if (abs(weightDist) > weightDistCutoffToSwrv && (scaledAngle1 - scaledAngle2) < 0.1) {
+                mode = swerve;
+                break;
+            }
+
+            setAngle(0.0);
+
+            newLeftVelocity = leftDriveVelocity + scaledAngle1 * velocityConstant * deltaTime;
+            newRightVelocity = rightDriveVelocity + scaledAngle2 * velocityConstant * deltaTime;
+
+            setVelocity(newLeftVelocity, newRightVelocity);
+
+            break;
+        case swerve:
+
+            if (abs(weightDist) < weightDistCutoffToHov) {
+                mode = hoverboard;
+                break;
+            }
+
+            float averageScaledAngle = (scaledAngle1 + scaledAngle2) / 2;
+            float angle = atan2(averageScaledAngle, weightDist) / PI;
+            setAngle(angle);
+
+            float magnitude = sqrt(pow(averageScaledAngle, 2) + pow(weightDist, 2));
+
+            float newVelocity = ((leftDriveVelocity + rightDriveVelocity) / 2) + magnitude * velocityConstant * deltaTime;
+            setVelocity(newVelocity, newVelocity);
+            
+            break;
+    }
+
+
+
+
+
+    prevMillis = millis();
 }
 
 
+void setAngle(float angle) {
+    odrive1.SetPosition(1, angle * wheelMultiplier);
+    odrive2.SetPosition(1, angle * wheelMultiplier);
+}
+
+void setVelocity(float leftVelocity, float rightVelocity) {
+    leftDriveVelocity = leftVelocity;
+    rightDriveVelocity = rightDriveVelocity;
+
+    odrive1.SetVelocity(0, leftVelocity);
+    odrive2.SetVelocity(0, rightVelocity);
+}
