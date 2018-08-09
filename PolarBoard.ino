@@ -79,10 +79,13 @@ float driveCurrentLimit = 11.0;
 float turnVelocityLimit = 22000.0;
 float turnCurrentLimit = 11.0;
 
-float wheelMultiplier = 42.0;
 float leftDriveVelocity = 0.0;
 float rightDriveVelocity = 0.0;
-float velocityConstant = 500.0;
+const float driveVelocityConstant = 500.0;
+
+float currentWheelAngle = 0.0;
+const float turnPositionConstant = 42.0;
+
 controlMode mode;
 
 int deltaTime = 0;
@@ -92,24 +95,26 @@ void setup() {
 
     Wire.begin();
 
-
+    //Set all values in rolling average array to 0
     for (int i = 0; i < rollingAvgSize; i++) {
         values1[i] = 0;
         values2[i] = 0;
     }
 
     Serial.begin(115200);
-
+    //initializing gyros
     gyro1.initialize();
     gyro2.initialize();
 
     pinMode(LED_BUILTIN, OUTPUT);
 
+    //initializing scales
     loadCell1.set_scale(scaleFactor);
     loadCell2.set_scale(scaleFactor);
     loadCell1.tare();
     loadCell2.tare();
 
+    //initializing odrives
     odrive1Serial.begin(115200);
     odrive2Serial.begin(115200);
 
@@ -128,42 +133,36 @@ void setup() {
 
 }
 
-float floatMap(float input, float inputMin, float inputMax, float outputMin, float outputMax) {
-    float slope = (outputMax - outputMin) / (inputMax - inputMin);
-    float output = slope * (input - inputMin) + outputMin;
-    return output;
-}
 
 void loop() {
-
+    //set deltaTime to the time between the start of this loop and the start of the previous one
     deltaTime = millis() - prevMillis;
+    prevMillis = millis();
 
+    //get gyro raw angles
     angle1 = gyro1.getAccelerationX();
     angle2 = gyro2.getAccelerationX();
 
+    //add raw angles to rolling average arrays
     total1 = total1 - values1[index1];
     values1[index1] = angle1;
     total1 = total1 + values1[index1];
     index1++;
-
     if (index1 >= rollingAvgSize) {
         index1 = 0;
     }
-
     avg1 = total1 / rollingAvgSize;
 
     total2 = total2 - values2[index2];
     values2[index2] = angle2;
     total2 = total2 + values2[index2];
     index2++;
-
     if (index2 >= rollingAvgSize) {
         index2 = 0;
     }
-
     avg2 = total2 / rollingAvgSize;
 
-
+    //scale angles to range [-1, 1]
     float floatAvg1 = avg1 / 16384.;
     float floatAvg2 = avg2 / 16384.;
     scaledAngle1 = floatMap(floatAvg1, -0.3, 0.3, -1.0, 1.0);
@@ -172,67 +171,89 @@ void loop() {
     Serial.print("\t");
     Serial.println(scaledAngle2);
 
+    //get readings from load cells
     float weight1 = loadCell1.get_units();
     float weight2 = loadCell2.get_units();
 
+    //turn the two weights into the range [-1, 1]
     weightDist = (weight1 - weight2) / totalWeight;
 
-    float wheelAngleSetpoint = (scaledAngle1 + scaledAngle2) / 2;
-
+    //initialize velocity variables (because there is a break statement which crosses initialization)
     float newLeftVelocity, newRightVelocity, newVelocity;
-    
-    switch (mode) {
-        case hoverboard:
 
+    //execute code based on which mode the polar board is in
+    switch (mode) {
+        //hoverboard mode: wheels are always facing foreward (perpendicular to the board) and can move at
+        //different speeds. It is basically the same as how a regular hoverboard works
+        case hoverboard:
+            //if the user is leaning to the side enough and the pedals are at pretty much the same angle, switch to swerve mode
             if (abs(weightDist) > weightDistCutoffToSwrv && (scaledAngle1 - scaledAngle2) < 0.1) {
                 mode = swerve;
                 break;
             }
 
+            //since it is in hoverboard mode, make sure that the wheels are pointing foreward
             setAngle(0.0);
 
-            newLeftVelocity = leftDriveVelocity + scaledAngle1 * velocityConstant * deltaTime;
-            newRightVelocity = rightDriveVelocity + scaledAngle2 * velocityConstant * deltaTime;
+            //change the velocity according to the foot pedal angle
+            //deltaTime is used so that the velocity is changed based off time, and not how fast the arduino executes the loops
+            //it is similar to how Time.deltaTime is used in the Unity3D game engine
+            newLeftVelocity = leftDriveVelocity + scaledAngle1 * deltaTime;
+            newRightVelocity = rightDriveVelocity + scaledAngle2 * deltaTime;
 
             setVelocity(newLeftVelocity, newRightVelocity);
 
             break;
+
+        //swerve mode: wheels can turn left and right but still always are parallel to each other. They must always be spinning
+        //at the same speed so that there is no slipping. It is similar to crab drive in frc
         case swerve:
 
-            if (abs(weightDist) < weightDistCutoffToHov) {
+            //if the user is not leaning either left or right and the wheels are generally facing foreward, switch to hoverboard mode
+            if (abs(weightDist) < weightDistCutoffToHov && abs(currentWheelAngle) < 0.1) {
                 mode = hoverboard;
                 break;
             }
 
+            //use the arctangent to get the angle from the x and y component and set the wheels to that angle
+            //this is the theta component of the polar coordinate
             float averageScaledAngle = (scaledAngle1 + scaledAngle2) / 2;
             float angle = atan2(averageScaledAngle, weightDist) / PI;
             setAngle(angle);
 
+            //use the distance formula to get the magnitude that we want to change the velocity by
+            //this is the radius component of the polar coordinate
             float magnitude = sqrt(pow(averageScaledAngle, 2) + pow(weightDist, 2));
 
-            float newVelocity = ((leftDriveVelocity + rightDriveVelocity) / 2) + magnitude * velocityConstant * deltaTime;
+            //change the velocity according to the magnitude of calculated above
+            float newVelocity = ((leftDriveVelocity + rightDriveVelocity) / 2) + magnitude * deltaTime;
             setVelocity(newVelocity, newVelocity);
             
             break;
     }
 
-
-
-
-
-    prevMillis = millis();
 }
 
+//maps a float value from an input range into an output range
+//does the exact same thing as the builtin map() function but it works with floats
+float floatMap(float input, float inputMin, float inputMax, float outputMin, float outputMax) {
+    float slope = (outputMax - outputMin) / (inputMax - inputMin);
+    float output = slope * (input - inputMin) + outputMin;
+    return output;
+}
 
+//sets the angle of the wheels
 void setAngle(float angle) {
-    odrive1.SetPosition(1, angle * wheelMultiplier);
-    odrive2.SetPosition(1, angle * wheelMultiplier);
+    currentWheelAngle = angle;
+    odrive1.SetPosition(1, angle * turnPositionConstant);
+    odrive2.SetPosition(1, angle * turnPositionConstant);
 }
 
+//sets the velocity of the wheels
 void setVelocity(float leftVelocity, float rightVelocity) {
     leftDriveVelocity = leftVelocity;
     rightDriveVelocity = rightDriveVelocity;
-
-    odrive1.SetVelocity(0, leftVelocity);
-    odrive2.SetVelocity(0, rightVelocity);
+      
+    odrive1.SetVelocity(0, leftVelocity * driveVelocityConstant);
+    odrive2.SetVelocity(0, rightVelocity * driveVelocityConstant);
 }
